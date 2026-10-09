@@ -1,0 +1,47 @@
+@import "tailwindcss";
+@import "@fontsource-variable/geist";
+@import "@fontsource-variable/geist-mono";
+
+:root {
+  --color-bg-0: #0A0A0B;
+  --color-bg-1: #121214;
+  --color-bg-2: #1A1A1D;
+  --color-line: #2A2A2F;
+  --color-text: #ECECEE;
+  --color-dim: #8B8B94;
+  --color-paper: #F2EFE6;
+  --color-ink: #141414;
+  --color-amber: #FFB224;
+  --color-green: #3DDC84;
+  --color-red: #FF5A52;
+}
+
+@theme {
+  --color-bg-0: var(--color-bg-0);
+  --color-bg-1: var(--color-bg-1);
+  --color-bg-2: var(--color-bg-2);
+  --color-line: var(--color-line);
+  --color-text: var(--color-text);
+  --color-dim: var(--color-dim);
+  --color-paper: var(--color-paper);
+  --color-ink: var(--color-ink);
+  --color-amber: var(--color-amber);
+  --color-green: var(--color-green);
+  --color-red: var(--color-red);
+
+  --font-sans: 'Geist Variable', system-ui, -apple-system, sans-serif;
+  --font-mono: 'Geist Mono Variable', monospace;
+
+  --radius-4: 4px;
+  --radius-12: 12px;
+
+  --shadow-paper: 0 24px 40px -20px #000000;
+}
+
+body {
+  font-family: var(--font-sans);
+  background-color: var(--color-bg-0);
+  color: var(--color-text);
+  margin: 0;
+  padding: 0;
+}

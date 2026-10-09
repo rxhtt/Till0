@@ -1,0 +1,17 @@
+node_modules/
+dist/
+build/
+.pnpm-store/
+
+# Python
+__pycache__/
+*.pyc
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Environment and logs
+*.log
+.DS_Store

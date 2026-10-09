@@ -1,0 +1,9 @@
+fastapi==0.143.0
+uvicorn==0.54.0
+psycopg[binary,pool]==3.3.6
+pydantic==2.14.0
+pytest==9.1.1
+pytest-asyncio==1.4.0
+httpx==0.28.1
+ruff==0.16.10
+mypy==2.4.0

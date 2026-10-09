@@ -1,0 +1,23 @@
+{
+  "name": "till0-workspace",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "pnpm -r run build",
+    "typecheck": "pnpm -r run typecheck",
+    "lint": "eslint . && pnpm depcruise",
+    "depcruise": "depcruise --config .dependency-cruiser.cjs packages apps",
+    "test": "pnpm -r run test",
+    "generate:api": "./scripts/generate-api-types.sh"
+  },
+  "devDependencies": {
+    "@typescript-eslint/eslint-plugin": "8.71.1",
+    "@typescript-eslint/parser": "8.71.1",
+    "dependency-cruiser": "18.5.0",
+    "eslint": "10.12.0",
+    "openapi-typescript": "7.13.0",
+    "typescript": "5.8.3",
+    "typescript-eslint": "8.71.1"
+  }
+}
