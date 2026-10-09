@@ -252,5 +252,49 @@ Audit comparing repository state against `SPEC.md`, `DESIGN.md`, `STACK.md`, and
 - `mypy --strict server/app/ server/tests/ scripts/seed.py`: 0 errors (9 source files).
 - **Drift verdict:** 0 drift detected. Complete alignment with specs and design tokens.
 
+## Phase 2: Core Domain, Local IndexedDB Layer, and Command Queue
 
+Status: Completed
+Date: 2026-10-09
 
+### Acceptance Criteria Verification
+
+1. **Packages and Core Domain (`packages/core`):**
+   - No React or DOM imports (`pnpm depcruise` confirms 0 boundary violations).
+   - Domain types: generated API schemas + local event/projection types.
+   - Clock and Rng interfaces with deterministic implementations.
+   - Money helpers in integer paise only (`formatPaise`, `calculateLineTotal`, `calculateCartTotals`). Zero floats.
+   - Cart model with pure reducer-style mutation functions: `createCart`, `addItem`, `adjustQty`, `removeLine`, `setQty`.
+   - Receipt model with standard receipt layout and formatted sequence numbers (`T1-000042`).
+
+2. **Dexie Database (`apps/web/src/data`):**
+   - Database name: `pos-${terminalId}`.
+   - Tables: `catalog`, `events` (statuses: `pending`, `sent`, `acked`), `meta` (tracks cursor and as_of), `printJobs`.
+   - Schema versioning defined cleanly via Dexie.
+
+3. **Single-Writer Command Queue (`CommandQueue`):**
+   - Serializes all mutations strictly in order through one Promise queue.
+   - Tested under concurrent submission (`Promise.all`): verified non-interleaved serial execution.
+
+4. **Checkout attempt_id & appendSale Idempotency:**
+   - Attempt ID generated at cart initialization; sale `event_id` derived from `attempt_id`.
+   - `appendSale(cart, tender)` writes `SALE_COMPLETED` event and print job atomically in a single Dexie transaction.
+   - Idempotency verified: re-running `appendSale` with identical cart/attempt_id produces exactly one sale and one print job.
+
+5. **Local Stock Projection:**
+   - `displayStock(sku) = last server balance + sum of deltas of local events not yet acked`.
+   - Tested: server balance 10, local sale of 2 units leaves display stock at 8. When pull ack marks event as `acked`, display stock remains consistent.
+
+6. **Receipt Sequence Numbers:**
+   - Verified gapless receipt numbering per terminal (`T1-000001`, `T1-000002`, ...).
+
+7. **Crash Safety / Outbox Persistence:**
+   - Simulated crash after sale persistence but before printer handling: verifies event remains safely persisted in Dexie outbox with `pending` status.
+
+### Quality Gates Status
+- `pnpm typecheck`: 0 errors across all workspace packages.
+- `pnpm lint` (eslint + depcruise): 0 violations (56 modules, 75 dependencies cruised).
+- `pnpm test`: 26 passed across 3 test suites (`core.test.ts` 4/4, `hardware.test.ts` 1/1, `app.test.tsx` 1/1, `data.test.ts` 20/20).
+- `pnpm build`: Succeeded (production bundle + service worker emitted).
+- Server tests: 13/13 passed via pytest in `.venv`.
+- Server lint & typecheck: ruff and mypy --strict passed with 0 errors.

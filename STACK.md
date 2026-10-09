@@ -22,6 +22,7 @@ All libraries are resolved and locked to exact versions using `npm view` and `pi
 | `vite-plugin-pwa` | `2.0.0` | PWA offline manifest & service worker |
 | `ulid` | `3.0.2` | Monotonic unique ID generation |
 | `vitest` | `5.0.3` | Unit test runner |
+| `fake-indexeddb` | `6.2.5` | IndexedDB polyfill for Dexie unit tests in Node |
 | `fast-check` | `4.10.2` | Property-based testing |
 | `playwright` | `1.64.0` | E2E browser testing |
 | `eslint` | `10.12.0` | Linter |

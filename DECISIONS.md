@@ -10,3 +10,4 @@ Format: question, choice, reason (one line per undecided item).
 - Low stock alert threshold default | 5 units | Standard retail threshold; configurable via LOW_STOCK_THRESHOLD environment variable.
 - EAN-13 GS1 company prefix | 8901234 | 890 is India GS1 country code prefix; 1234 is arbitrary demo company prefix; check digit computed with standard EAN-13 modulo-10 algorithm.
 - Sync push advisory lock ID | 42424242 | Fixed 64-bit lock integer for pg_advisory_xact_lock to serialize concurrent push transactions (ADR 0014).
+- fake-indexeddb for Dexie tests | fake-indexeddb 6.2.5 devDependency | Vitest runs in Node which has no IndexedDB; fake-indexeddb provides an in-memory polyfill required to test Dexie transactions (appendSale, projection, idempotency).
