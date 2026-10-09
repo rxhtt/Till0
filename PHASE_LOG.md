@@ -190,6 +190,7 @@ To eliminate sequence holes and race conditions in concurrent syncing, we introd
    - However, the observed peak *checkout* on the connection pool remains low (~3-14 connections) because `psycopg_pool` defaults to `min_size=2` and grows dynamically: each duplicate request holds its advisory lock for under a millisecond, completing and returning its connection back to the pool faster than the pool background worker spawns all 20 connections.
    - The test suite now runs real uvicorn servers via `UvicornTestServer` over TCP, genuinely overlapping requests and asserting that simultaneous in-flight requests reach at least 20 (measuring 50 in test (a) and 200 in test (f)).
 
+
 4. **Code Quality Gates:**
    - `ruff check scripts/ server/`: All checks passed! (0 errors).
    - `mypy --strict server/app/ server/tests/ scripts/seed.py`: Success: no issues found in 9 source files.
@@ -197,5 +198,59 @@ To eliminate sequence holes and race conditions in concurrent syncing, we introd
    - `pnpm lint`: 0 violations across 32 modules cruised.
    - `pnpm test`: 6 passed across 3 test files.
    - CI Workflow (`.github/workflows/ci.yml`): `postgres:16-alpine` service container added with healthcheck and `DATABASE_URL`.
+
+## Drift Check — Post Phase 1 (2026-10-09)
+
+Audit comparing repository state against `SPEC.md`, `DESIGN.md`, `STACK.md`, and `AGENTS.md`.
+
+### 1. Scope & Features (SPEC.md / AGENTS.md Scope Law)
+- **Web UI:** Remains minimal scaffold (`apps/web/src/App.tsx` renders only `<main>` containing `Till0`). Zero unauthorized UI components, settings, modals, auth screens, or routes created.
+- **Server Endpoints:** Exactly the specified set in Phase 1:
+  - `GET /health`
+  - `GET /catalog`
+  - `POST /sync/push`
+  - `GET /sync/pull`
+  - `GET /audit`
+  - `GET /ledger`
+  - `POST /admin/reset`
+  - No extraneous routes, no mock data routes, no unauthenticated backdoor endpoints.
+- **Data Models & Schema:** Exactly matches `SPEC.md` and Phase 1 prompt:
+  - Tables: `products`, `events`, `stock_balance`, `exceptions`, `dead_letters`, `alerts`, `server_sequence`.
+  - Event types: `SALE_COMPLETED`, `STOCK_RECEIVED`.
+  - Money: Integer paise only everywhere (`price_paise`, `total_paise`, `tax_bp`). Zero floats.
+
+### 2. Design Tokens & Styling (DESIGN.md)
+- **Colors:** Exactly the 10 tokens defined in `DESIGN.md` in `apps/web/src/index.css`:
+  - `--color-bg-0`, `--color-bg-1`, `--color-bg-2`, `--color-bg-subtle`, `--color-border`, `--color-text`, `--color-text-muted`, `--color-primary`, `--color-green`, `--color-red`.
+  - Zero raw hex values, unlisted tailwind color classes, or arbitrary colors used in component markup.
+- **Typography:**
+  - Font families: Geist Variable (`font-sans`) and Geist Mono Variable (`font-mono`) self-hosted via `@fontsource-variable/*` (no external CDNs).
+  - Font sizes: `text-[28px]` used in `App.tsx` is within `{12, 14, 16, 20, 28, 48}`.
+  - Font weights: `font-semibold` (600) is within allowed set `{400, 600}`.
+- **Radii & Shadows:**
+  - Radii: `rounded-[4px]` and `rounded-[12px]` only.
+  - Shadow: `--paper-shadow: 0 24px 40px -20px #000000;` matches specification.
+- **Animations / Icons:**
+  - Icons: `lucide-react` pinned.
+  - Zero arbitrary animation keyframes or CSS transitions outside tokens.
+
+### 3. Dependencies (STACK.md & AGENTS.md Stack Lock)
+- All packages in root `package.json`, `apps/web/package.json`, `packages/core/package.json`, `packages/hardware/package.json`, and `server/pyproject.toml` are pinned exact versions.
+- Zero unlisted or extraneous packages installed.
+
+### 4. Determinism & Architecture
+- Clock and Rng injection patterns strictly preserved in `packages/core/src/index.ts`.
+- Gapless sequence ordering guaranteed via transaction-scoped PostgreSQL advisory lock (`pg_advisory_xact_lock(42424242)`) documented in `docs/adr/0014-gapless-server-sequence-via-advisory-lock.md`.
+- No orphan or uncommitted files in repository tree.
+
+### 5. Quality Gates Status
+- `pnpm typecheck`: 0 errors (3 projects).
+- `pnpm lint` (eslint + depcruise): 0 violations (32 modules, 22 dependencies cruised).
+- `pnpm test`: 6 passed (3 test suites: core, hardware, web).
+- `python -m pytest server/tests/ -v -s`: 13 passed in 8.63s (including real uvicorn TCP concurrency tests).
+- `ruff check scripts/ server/`: 0 errors.
+- `mypy --strict server/app/ server/tests/ scripts/seed.py`: 0 errors (9 source files).
+- **Drift verdict:** 0 drift detected. Complete alignment with specs and design tokens.
+
 
 
