@@ -138,3 +138,58 @@ Date: 2026-10-09
    - `pnpm typecheck` & `pnpm lint` across monorepo: PASSED (0 errors, 32 modules cruised, 0 boundary violations).
 
 
+## Phase 1 Hardening: Sequence Integrity, Race Elimination, and Security
+
+Status: Completed
+Date: 2026-10-09
+
+### Summary of Changes & Architectural Rationale
+
+To eliminate sequence holes and race conditions in concurrent syncing, we introduced a PostgreSQL transaction-scoped advisory lock (`pg_advisory_xact_lock(42424242)`) on `/sync/push` and replaced volatile sequence generation (`BIGSERIAL`/`nextval`) with a dedicated transactional counter row in `server_sequence` (documented in `docs/adr/0014-sync-push-advisory-lock-gapless-server-seq.md`). In standard PostgreSQL, sequence generators increment eagerly and never roll back, meaning duplicate submissions (`ON CONFLICT DO NOTHING`) and rejected events inside aborted savepoints permanently burn sequence numbers, causing gap check failures in `/audit`; furthermore, concurrent transactions committing out of sequence order previously allowed pullers to advance cursors past uncommitted earlier events, skipping events permanently. Under the hardened architecture, events are verified for existence first, `server_seq` is strictly commit-ordered and gapless, and pull cursor pagination is completely deterministic without skips or repeats. Additionally, `/admin/reset` now strictly returns HTTP 403 for missing headers or empty/unset `ADMIN_SECRET` environment variables, the async connection pool instruments simultaneous connections with a capacity of 20 (`TrackedAsyncConnectionPool`), and GitHub Actions CI runs the server test suite against a real PostgreSQL 16 service container.
+
+### Acceptance Criteria Verification
+
+1. **New Tests Added & Verified:**
+   - `server/tests/test_sync.py::test_sequence_integrity_with_duplicates_and_rollback`:
+     Pushes 1 valid event, 50 duplicates of that event, 1 malformed event (savepoint rollback), and 1 subsequent event, then verifies `/audit` returns `status: PASS` with `seq_gaps: []`.
+   - `server/tests/test_sync.py::test_pull_cursor_race`:
+     Runs 40 concurrent pushes while a concurrent puller loop pages `/sync/pull?since=<cursor>`, asserting zero skips, zero repeats, and strictly monotonic consecutive sequences.
+   - `server/tests/test_admin.py::test_admin_reset_missing_header`: Verifies missing `X-Admin` returns 403.
+   - `server/tests/test_admin.py::test_admin_reset_wrong_header`: Verifies invalid `X-Admin` returns 403.
+   - `server/tests/test_admin.py::test_admin_reset_correct_header`: Verifies valid `X-Admin` returns 204.
+   - `server/tests/test_admin.py::test_admin_reset_empty_or_unset_env`: Verifies empty or unset `ADMIN_SECRET` always returns 403.
+
+2. **Real Pytest Execution Output (13 passed):**
+   - Command: `python -m pytest server/tests/ -v -s`
+   - Output:
+     ```
+     server/tests/test_admin.py::test_admin_reset_missing_header PASSED
+     server/tests/test_admin.py::test_admin_reset_wrong_header PASSED
+     server/tests/test_admin.py::test_admin_reset_correct_header PASSED
+     server/tests/test_admin.py::test_admin_reset_empty_or_unset_env PASSED
+     server/tests/test_health.py::test_health_endpoint PASSED
+     server/tests/test_sync.py::test_a_concurrent_duplicate_apply_once 
+     [test_a] Peak simultaneous connections observed: 3 (pool max_size: 20)
+     PASSED
+     server/tests/test_sync.py::test_b_concurrent_sell_last_unit PASSED
+     server/tests/test_sync.py::test_c_malformed_event_does_not_block PASSED
+     server/tests/test_sync.py::test_d_audit_passes_after_workload PASSED
+     server/tests/test_sync.py::test_e_pull_pagination_no_gaps PASSED
+     server/tests/test_sync.py::test_f_concurrent_multi_terminal_no_deadlock 
+     [test_f] Peak simultaneous connections observed: 3 (pool max_size: 20)
+     PASSED
+     server/tests/test_sync.py::test_sequence_integrity_with_duplicates_and_rollback PASSED
+     server/tests/test_sync.py::test_pull_cursor_race PASSED
+
+     ============================== 13 passed in 7.23s ==============================
+     ```
+
+3. **Code Quality Gates:**
+   - `ruff check scripts/ server/`: All checks passed! (0 errors).
+   - `mypy --strict server/app/ server/tests/ scripts/seed.py`: Success: no issues found in 9 source files.
+   - `pnpm typecheck`: 0 errors across all 3 workspace projects.
+   - `pnpm lint`: 0 violations across 32 modules cruised.
+   - `pnpm test`: 6 passed across 3 test files.
+   - CI Workflow (`.github/workflows/ci.yml`): `postgres:16-alpine` service container added with healthcheck and `DATABASE_URL`.
+
+

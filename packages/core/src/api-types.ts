@@ -57,6 +57,8 @@ export interface paths {
          * Sync Push
          * @description Accept a batch of up to 50 events from a terminal.
          *
+         *     Serializes /sync/push via pg_advisory_xact_lock to ensure commit-ordered,
+         *     gapless server_seq (ADR 0014).
          *     Per-event SAVEPOINT ensures one bad event cannot block the rest.
          *     Stock rows are updated in sorted-SKU order to prevent deadlocks.
          */
@@ -143,7 +145,7 @@ export interface paths {
         put?: never;
         /**
          * Admin Reset
-         * @description Truncate all data tables (demo only). Requires X-Admin header.
+         * @description Truncate all data tables (demo only). Requires X-Admin header and valid ADMIN_SECRET.
          */
         post: operations["admin_reset_admin_reset_post"];
         delete?: never;
@@ -574,8 +576,8 @@ export interface operations {
     admin_reset_admin_reset_post: {
         parameters: {
             query?: never;
-            header: {
-                "X-Admin": string;
+            header?: {
+                "X-Admin"?: string | null;
             };
             path?: never;
             cookie?: never;

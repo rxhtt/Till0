@@ -46,6 +46,9 @@ LOW_STOCK_THRESHOLD: int = int(os.environ.get("LOW_STOCK_THRESHOLD", "5"))
 # Admin secret required for POST /admin/reset.
 ADMIN_SECRET: str = os.environ.get("ADMIN_SECRET", "till0_admin")
 
+# Advisory lock ID to serialize /sync/push transactions (ADR 0014)
+SYNC_PUSH_LOCK_ID: int = 42424242
+
 
 # ---------------------------------------------------------------------------
 # Lifespan
@@ -254,6 +257,8 @@ async def _apply_stock_received(
 async def sync_push(batch: PushBatch) -> PushResponse:
     """Accept a batch of up to 50 events from a terminal.
 
+    Serializes /sync/push via pg_advisory_xact_lock to ensure commit-ordered,
+    gapless server_seq (ADR 0014).
     Per-event SAVEPOINT ensures one bad event cannot block the rest.
     Stock rows are updated in sorted-SKU order to prevent deadlocks.
     """
@@ -261,8 +266,29 @@ async def sync_push(batch: PushBatch) -> PushResponse:
     results: list[PushEventResult] = []
 
     async with pool.connection() as conn:
+        # Advisory lock serializes /sync/push transactions for commit-ordered, gapless server_seq
+        await conn.execute("SELECT pg_advisory_xact_lock(%s)", (SYNC_PUSH_LOCK_ID,))
+
         for ev in batch.events:
-            # Each event gets its own SAVEPOINT
+            # Check existence first: duplicate events never consume a server_seq
+            existing_row = await (
+                await conn.execute(
+                    "SELECT server_seq FROM events WHERE event_id = %s",
+                    (ev.event_id,),
+                )
+            ).fetchone()
+
+            if existing_row is not None:
+                results.append(
+                    PushEventResult(
+                        event_id=ev.event_id,
+                        status="duplicate",
+                        server_seq=None,
+                    )
+                )
+                continue
+
+            # Each new event gets its own SAVEPOINT
             sp = f"sp_{ev.event_id.replace('-', '_')}"
             try:
                 await conn.execute(f"SAVEPOINT {sp}")
@@ -276,46 +302,44 @@ async def sync_push(batch: PushBatch) -> PushResponse:
 
                 cur = conn.cursor()
 
-                # Try to insert the event (UNIQUE constraint on event_id)
-                rows = await (
-                    await cur.execute(
-                        """
-                        INSERT INTO events
-                            (event_id, terminal_id, terminal_seq, type, payload, client_ts)
-                        VALUES (%s, %s, %s, %s, %s::jsonb, %s)
-                        ON CONFLICT (event_id) DO NOTHING
-                        RETURNING server_seq
-                        """,
-                        (
-                            ev.event_id,
-                            ev.terminal_id,
-                            ev.terminal_seq,
-                            ev.type,
-                            json.dumps(payload),
-                            ev.client_ts,
-                        ),
-                    )
-                ).fetchone()
-
-                if rows is None:
-                    # Duplicate — event_id already in DB
-                    await conn.execute(f"RELEASE SAVEPOINT {sp}")
-                    results.append(
-                        PushEventResult(
-                            event_id=ev.event_id,
-                            status="duplicate",
-                            server_seq=None,
-                        )
-                    )
-                    continue
-
-                server_seq: int = rows["server_seq"]
-
-                # Apply stock deltas for newly inserted events only
+                # Apply stock deltas for newly inserted events
+                # (validates lines & updates stock in sorted-SKU order)
                 if ev_type == "SALE_COMPLETED":
                     await _apply_sale(cur, payload, ev.event_id, LOW_STOCK_THRESHOLD)
                 elif ev_type == "STOCK_RECEIVED":
                     await _apply_stock_received(cur, payload, LOW_STOCK_THRESHOLD)
+
+                # Allocate gapless server_seq from transactional counter row after validation
+                seq_row = await (
+                    await cur.execute(
+                        """
+                        UPDATE server_sequence
+                        SET current_seq = current_seq + 1
+                        WHERE id = 1
+                        RETURNING current_seq
+                        """
+                    )
+                ).fetchone()
+                if seq_row is None:
+                    raise RuntimeError("server_sequence row missing")
+                server_seq: int = seq_row["current_seq"]
+
+                await cur.execute(
+                    """
+                    INSERT INTO events
+                        (server_seq, event_id, terminal_id, terminal_seq, type, payload, client_ts)
+                    VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s)
+                    """,
+                    (
+                        server_seq,
+                        ev.event_id,
+                        ev.terminal_id,
+                        ev.terminal_seq,
+                        ev.type,
+                        json.dumps(payload),
+                        ev.client_ts,
+                    ),
+                )
 
                 await conn.execute(f"RELEASE SAVEPOINT {sp}")
                 results.append(
@@ -647,10 +671,18 @@ async def get_ledger() -> LedgerResponse:
 
 @app.post("/admin/reset", status_code=204)
 async def admin_reset(
-    x_admin: str = Header(alias="X-Admin"),
+    x_admin: str | None = Header(default=None, alias="X-Admin"),
 ) -> None:
-    """Truncate all data tables (demo only). Requires X-Admin header."""
-    if x_admin != ADMIN_SECRET:
+    """Truncate all data tables (demo only). Requires X-Admin header and valid ADMIN_SECRET."""
+    secret = os.environ.get("ADMIN_SECRET", ADMIN_SECRET)
+    invalid_auth = (
+        not secret
+        or not ADMIN_SECRET
+        or x_admin is None
+        or x_admin != secret
+        or x_admin != ADMIN_SECRET
+    )
+    if invalid_auth:
         raise HTTPException(status_code=403, detail="Forbidden")
 
     pool = get_pool()
@@ -659,7 +691,8 @@ async def admin_reset(
             """
             TRUNCATE alerts, dead_letters, exceptions,
                      stock_balance, events
-            RESTART IDENTITY CASCADE
+            RESTART IDENTITY CASCADE;
+            UPDATE server_sequence SET current_seq = 0 WHERE id = 1;
             """
         )
         await conn.commit()

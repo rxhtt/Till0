@@ -22,7 +22,7 @@ import psycopg
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from server.app.db import DDL, close_pool, init_pool
+from server.app.db import DDL, close_pool, get_pool, init_pool
 from server.app.main import app
 
 # ---------------------------------------------------------------------------
@@ -137,6 +137,10 @@ async def db_reset(client: AsyncClient) -> None:
 @pytest.mark.asyncio
 async def test_a_concurrent_duplicate_apply_once(client: AsyncClient) -> None:
     """50 concurrent pushes of the same event_id apply exactly once."""
+    pool = get_pool()
+    assert pool.max_size >= 20, f"Expected pool max_size >= 20, got {pool.max_size}"
+    pool.peak_conns = 0
+
     event = _sale_event(sku="SKU001", qty=1)
     eid = event["event_id"]
 
@@ -144,6 +148,10 @@ async def test_a_concurrent_duplicate_apply_once(client: AsyncClient) -> None:
         return await _push(client, [event])
 
     results = await asyncio.gather(*[push_one() for _ in range(50)])
+    print(
+        f"\n[test_a] Peak simultaneous connections observed: {pool.peak_conns} "
+        f"(pool max_size: {pool.max_size})"
+    )
 
     applied = [
         r["results"][0]
@@ -376,10 +384,18 @@ async def test_f_concurrent_multi_terminal_no_deadlock(client: AsyncClient) -> N
         )
 
     # Push all 200 concurrently in batches of 1 each (max concurrency stress)
+    pool = get_pool()
+    assert pool.max_size >= 20, f"Expected pool max_size >= 20, got {pool.max_size}"
+    pool.peak_conns = 0
+
     async def push_one(ev: dict[str, Any]) -> dict[str, Any]:
         return await _push(client, [ev])
 
     results = await asyncio.gather(*[push_one(ev) for ev in events])
+    print(
+        f"\n[test_f] Peak simultaneous connections observed: {pool.peak_conns} "
+        f"(pool max_size: {pool.max_size})"
+    )
 
     # All 200 requests must get a 200 response (no crashes/deadlocks)
     for result in results:
@@ -389,3 +405,124 @@ async def test_f_concurrent_multi_terminal_no_deadlock(client: AsyncClient) -> N
     # Audit must pass (conservation)
     audit = (await client.get("/audit")).json()
     assert audit["status"] == "PASS", json.dumps(audit, indent=2)
+
+
+# ---------------------------------------------------------------------------
+# Sequence integrity: duplicates + rolled back savepoint must not create gaps
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_sequence_integrity_with_duplicates_and_rollback(client: AsyncClient) -> None:
+    """Push 50 duplicates and a malformed event; subsequent audit must pass with no seq gaps."""
+    # 1. Push a valid initial event
+    ev1 = _sale_event(terminal_id="T1", terminal_seq=1, sku="SKU001", qty=1, event_id=_uid())
+    r1 = await _push(client, [ev1])
+    assert r1["results"][0]["status"] == "applied"
+    first_seq = r1["results"][0]["server_seq"]
+    assert first_seq is not None
+
+    # 2. Push 50 duplicates of ev1
+    async def push_dup() -> dict[str, Any]:
+        return await _push(client, [ev1])
+
+    dup_results = await asyncio.gather(*[push_dup() for _ in range(50)])
+    assert all(r["results"][0]["status"] == "duplicate" for r in dup_results)
+
+    # 3. Push a malformed event whose savepoint rolls back (negative qty fails validation)
+    bad_ev = {
+        "event_id": _uid(),
+        "terminal_id": "T1",
+        "terminal_seq": 999,
+        "type": "SALE_COMPLETED",
+        "payload": {"lines": [{"sku": "SKU001", "qty": -5}]},
+        "client_ts": "2026-01-01T00:00:00+00:00",
+    }
+    r_bad = await _push(client, [bad_ev])
+    assert r_bad["results"][0]["status"] == "rejected"
+    assert r_bad["results"][0]["server_seq"] is None
+
+    # 4. Push another valid event
+    ev2 = _sale_event(terminal_id="T1", terminal_seq=2, sku="SKU002", qty=1, event_id=_uid())
+    r2 = await _push(client, [ev2])
+    assert r2["results"][0]["status"] == "applied"
+
+    # 5. Run audit - must PASS with gap check intact
+    audit = (await client.get("/audit")).json()
+    assert audit["status"] == "PASS", f"Audit failed: {json.dumps(audit, indent=2)}"
+    assert audit["seq_gaps"] == [], f"Found sequence gaps: {audit['seq_gaps']}"
+    assert audit["duplicate_event_ids"] == []
+
+
+# ---------------------------------------------------------------------------
+# Pull cursor race: concurrent pushes with concurrent pull pagination
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_pull_cursor_race(client: AsyncClient) -> None:
+    """Concurrent pushes while a puller repeatedly calls /sync/pull using cursor.
+
+    After quiescence, all events from other terminals must be pulled:
+    no skips, no repeats.
+    """
+    num_events = 40
+    events = [
+        _sale_event(terminal_id="T1", terminal_seq=i + 1, sku="SKU001", qty=1, event_id=_uid())
+        for i in range(num_events)
+    ]
+    expected_ids = {e["event_id"] for e in events}
+
+    pulled_events: list[dict[str, Any]] = []
+    pull_cursor = 0
+    stop_pulling = False
+
+    async def pull_worker() -> None:
+        nonlocal pull_cursor
+        while not stop_pulling:
+            resp = await client.get(f"/sync/pull?since={pull_cursor}&terminal_id=T2")
+            if resp.status_code == 200:
+                data = resp.json()
+                evs = data["events"]
+                pulled_events.extend(evs)
+                pull_cursor = data["as_of_server_seq"]
+            await asyncio.sleep(0.01)
+
+    pull_task = asyncio.create_task(pull_worker())
+
+    # Concurrent pushes from T1
+    async def push_one(ev: dict[str, Any]) -> dict[str, Any]:
+        return await _push(client, [ev])
+
+    await asyncio.gather(*[push_one(ev) for ev in events])
+
+    # Allow puller to drain up to quiescence
+    await asyncio.sleep(0.1)
+    stop_pulling = True
+    await pull_task
+
+    # Final pull to ensure everything up to latest server_seq is pulled
+    final_resp = await client.get(f"/sync/pull?since={pull_cursor}&terminal_id=T2")
+    assert final_resp.status_code == 200
+    pulled_events.extend(final_resp.json()["events"])
+
+    pulled_ids = [e["event_id"] for e in pulled_events]
+    pulled_seqs = [e["server_seq"] for e in pulled_events]
+
+    # No repeats
+    assert len(pulled_ids) == len(set(pulled_ids)), (
+        f"Repeats detected: {len(pulled_ids)} vs {len(set(pulled_ids))}"
+    )
+
+    # No skips: all expected events are pulled
+    assert set(pulled_ids) == expected_ids, (
+        f"Mismatch in pulled IDs: missing {expected_ids - set(pulled_ids)}"
+    )
+
+    # Monotonic gapless sequence
+    assert sorted(pulled_seqs) == pulled_seqs, "Pulled server_seqs are not strictly monotonic"
+    for i in range(1, len(pulled_seqs)):
+        assert pulled_seqs[i] == pulled_seqs[i - 1] + 1, (
+            f"Gap between {pulled_seqs[i - 1]} and {pulled_seqs[i]}"
+        )
+

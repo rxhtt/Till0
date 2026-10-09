@@ -7,12 +7,38 @@ Schema is applied at startup via CREATE TABLE IF NOT EXISTS.
 from __future__ import annotations
 
 import os
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from typing import Any
 
 import psycopg_pool
 from psycopg import AsyncConnection
 from psycopg.rows import dict_row
 
-_POOL: psycopg_pool.AsyncConnectionPool[AsyncConnection[dict]] | None = None  # type: ignore[type-arg]
+
+class TrackedAsyncConnectionPool(psycopg_pool.AsyncConnectionPool[AsyncConnection[dict[str, Any]]]):
+    """AsyncConnectionPool that instruments simultaneous connection usage."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.active_conns: int = 0
+        self.peak_conns: int = 0
+
+    @asynccontextmanager
+    async def connection(
+        self, timeout: float | None = None
+    ) -> AsyncIterator[AsyncConnection[dict[str, Any]]]:
+        async with super().connection(timeout=timeout) as conn:
+            self.active_conns += 1
+            if self.active_conns > self.peak_conns:
+                self.peak_conns = self.active_conns
+            try:
+                yield conn
+            finally:
+                self.active_conns -= 1
+
+
+_POOL: TrackedAsyncConnectionPool | None = None
 
 DDL = """
 CREATE TABLE IF NOT EXISTS products (
@@ -61,6 +87,13 @@ CREATE TABLE IF NOT EXISTS alerts (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     delivered  BOOLEAN NOT NULL DEFAULT FALSE
 );
+
+CREATE TABLE IF NOT EXISTS server_sequence (
+    id          INTEGER PRIMARY KEY,
+    current_seq BIGINT NOT NULL
+);
+INSERT INTO server_sequence (id, current_seq) VALUES (1, 0)
+ON CONFLICT (id) DO NOTHING;
 """
 
 
@@ -71,7 +104,7 @@ async def init_pool() -> None:
         "DATABASE_URL",
         "postgresql://till0:till0_secret@localhost:5433/till0",
     )
-    _POOL = psycopg_pool.AsyncConnectionPool(
+    _POOL = TrackedAsyncConnectionPool(
         conninfo=dsn,
         min_size=2,
         max_size=20,
@@ -81,6 +114,18 @@ async def init_pool() -> None:
     await _POOL.open()
     async with _POOL.connection() as conn:
         await conn.execute(DDL)
+        await conn.execute(
+            """
+            INSERT INTO server_sequence (id, current_seq)
+            VALUES (1, COALESCE((SELECT MAX(server_seq) FROM events), 0))
+            ON CONFLICT (id) DO UPDATE
+            SET current_seq = GREATEST(
+                server_sequence.current_seq,
+                COALESCE((SELECT MAX(server_seq) FROM events), 0)
+            )
+            """
+        )
+        await conn.commit()
 
 
 async def close_pool() -> None:
@@ -91,7 +136,7 @@ async def close_pool() -> None:
         _POOL = None
 
 
-def get_pool() -> psycopg_pool.AsyncConnectionPool[AsyncConnection[dict]]:  # type: ignore[type-arg]
+def get_pool() -> TrackedAsyncConnectionPool:
     """Return the active pool; raises if not initialised."""
     if _POOL is None:
         raise RuntimeError("Database pool not initialised")
