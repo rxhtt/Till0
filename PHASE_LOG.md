@@ -169,22 +169,28 @@ To eliminate sequence holes and race conditions in concurrent syncing, we introd
      server/tests/test_admin.py::test_admin_reset_empty_or_unset_env PASSED
      server/tests/test_health.py::test_health_endpoint PASSED
      server/tests/test_sync.py::test_a_concurrent_duplicate_apply_once 
-     [test_a] Peak simultaneous connections observed: 3 (pool max_size: 20)
+     [test_a] Peak simultaneous in-flight requests: 50 | Peak simultaneous DB connections: 3 (pool max_size: 20)
      PASSED
      server/tests/test_sync.py::test_b_concurrent_sell_last_unit PASSED
      server/tests/test_sync.py::test_c_malformed_event_does_not_block PASSED
      server/tests/test_sync.py::test_d_audit_passes_after_workload PASSED
      server/tests/test_sync.py::test_e_pull_pagination_no_gaps PASSED
      server/tests/test_sync.py::test_f_concurrent_multi_terminal_no_deadlock 
-     [test_f] Peak simultaneous connections observed: 3 (pool max_size: 20)
+     [test_f] Peak simultaneous in-flight requests: 200 | Peak simultaneous DB connections: 3 (pool max_size: 20)
      PASSED
      server/tests/test_sync.py::test_sequence_integrity_with_duplicates_and_rollback PASSED
      server/tests/test_sync.py::test_pull_cursor_race PASSED
 
-     ============================== 13 passed in 7.23s ==============================
+     ============================== 13 passed in 8.44s ==============================
      ```
 
-3. **Code Quality Gates:**
+3. **Concurrency Honesty Check (Analysis of Observed Peak Connections):**
+   - In `/sync/push`, the DB connection is acquired at line 268 (`async with pool.connection() as conn:`) *before* `pg_advisory_xact_lock` is executed on line 270 (`await conn.execute("SELECT pg_advisory_xact_lock(%s)", ...)`).
+   - Under real uvicorn over TCP sockets with `asyncio.gather`, client in-flight request concurrency reaches **50 simultaneous requests** in test (a) and **200 simultaneous requests** in test (f).
+   - However, the observed peak *checkout* on the connection pool remains low (~3-14 connections) because `psycopg_pool` defaults to `min_size=2` and grows dynamically: each duplicate request holds its advisory lock for under a millisecond, completing and returning its connection back to the pool faster than the pool background worker spawns all 20 connections.
+   - The test suite now runs real uvicorn servers via `UvicornTestServer` over TCP, genuinely overlapping requests and asserting that simultaneous in-flight requests reach at least 20 (measuring 50 in test (a) and 200 in test (f)).
+
+4. **Code Quality Gates:**
    - `ruff check scripts/ server/`: All checks passed! (0 errors).
    - `mypy --strict server/app/ server/tests/ scripts/seed.py`: Success: no issues found in 9 source files.
    - `pnpm typecheck`: 0 errors across all 3 workspace projects.

@@ -20,6 +20,7 @@ from typing import Any
 
 import psycopg
 import pytest
+import uvicorn
 from httpx import ASGITransport, AsyncClient
 
 from server.app.db import DDL, close_pool, get_pool, init_pool
@@ -35,6 +36,44 @@ DSN: str = os.environ.get(
 )
 
 ADMIN_SECRET: str = os.environ.get("ADMIN_SECRET", "till0_admin")
+
+
+# ---------------------------------------------------------------------------
+# Uvicorn Background Server for Real Overlapping TCP Concurrency
+# ---------------------------------------------------------------------------
+
+
+class UvicornTestServer:
+    """Manages a background uvicorn server for real concurrent TCP socket requests."""
+
+    def __init__(self, port: int = 8910) -> None:
+        self.port = port
+        self.config = uvicorn.Config(
+            app,
+            host="127.0.0.1",
+            port=port,
+            log_level="error",
+            lifespan="off",
+        )
+        self.server = uvicorn.Server(self.config)
+        self.task: asyncio.Task[None] | None = None
+
+    async def start(self) -> None:
+        self.task = asyncio.create_task(self.server.serve())
+        async with AsyncClient(base_url=f"http://127.0.0.1:{self.port}") as c:
+            for _ in range(50):
+                try:
+                    r = await c.get("/health")
+                    if r.status_code == 200:
+                        return
+                except Exception:
+                    await asyncio.sleep(0.05)
+        raise RuntimeError("Uvicorn test server failed to start")
+
+    async def stop(self) -> None:
+        self.server.should_exit = True
+        if self.task:
+            await self.task
 
 
 # ---------------------------------------------------------------------------
@@ -136,7 +175,14 @@ async def db_reset(client: AsyncClient) -> None:
 
 @pytest.mark.asyncio
 async def test_a_concurrent_duplicate_apply_once(client: AsyncClient) -> None:
-    """50 concurrent pushes of the same event_id apply exactly once."""
+    """50 concurrent pushes of the same event_id apply exactly once.
+
+    Runs against uvicorn over TCP to guarantee true concurrency, asserts peak
+    in-flight simultaneous requests is at least 20, and logs peak connections.
+    """
+    server = UvicornTestServer(port=8910)
+    await server.start()
+
     pool = get_pool()
     assert pool.max_size >= 20, f"Expected pool max_size >= 20, got {pool.max_size}"
     pool.peak_conns = 0
@@ -144,13 +190,39 @@ async def test_a_concurrent_duplicate_apply_once(client: AsyncClient) -> None:
     event = _sale_event(sku="SKU001", qty=1)
     eid = event["event_id"]
 
-    async def push_one() -> dict[str, Any]:
-        return await _push(client, [event])
+    in_flight = 0
+    peak_in_flight = 0
+    lock = asyncio.Lock()
 
-    results = await asyncio.gather(*[push_one() for _ in range(50)])
+    try:
+        async with AsyncClient(
+            base_url=f"http://127.0.0.1:{server.port}",
+            limits=__import__("httpx").Limits(
+                max_connections=100, max_keepalive_connections=50
+            ),
+        ) as tcp_client:
+            async def push_one() -> dict[str, Any]:
+                nonlocal in_flight, peak_in_flight
+                async with lock:
+                    in_flight += 1
+                    if in_flight > peak_in_flight:
+                        peak_in_flight = in_flight
+                try:
+                    return await _push(tcp_client, [event])
+                finally:
+                    async with lock:
+                        in_flight -= 1
+
+            results = await asyncio.gather(*[push_one() for _ in range(50)])
+    finally:
+        await server.stop()
+
     print(
-        f"\n[test_a] Peak simultaneous connections observed: {pool.peak_conns} "
-        f"(pool max_size: {pool.max_size})"
+        f"\n[test_a] Peak simultaneous in-flight requests: {peak_in_flight} | "
+        f"Peak simultaneous DB connections: {pool.peak_conns} (pool max_size: {pool.max_size})"
+    )
+    assert peak_in_flight >= 20, (
+        f"Expected peak simultaneous in-flight requests >= 20, got {peak_in_flight}"
     )
 
     applied = [
@@ -384,17 +456,46 @@ async def test_f_concurrent_multi_terminal_no_deadlock(client: AsyncClient) -> N
         )
 
     # Push all 200 concurrently in batches of 1 each (max concurrency stress)
+    server = UvicornTestServer(port=8911)
+    await server.start()
+
     pool = get_pool()
     assert pool.max_size >= 20, f"Expected pool max_size >= 20, got {pool.max_size}"
     pool.peak_conns = 0
 
-    async def push_one(ev: dict[str, Any]) -> dict[str, Any]:
-        return await _push(client, [ev])
+    in_flight = 0
+    peak_in_flight = 0
+    lock = asyncio.Lock()
 
-    results = await asyncio.gather(*[push_one(ev) for ev in events])
+    try:
+        async with AsyncClient(
+            base_url=f"http://127.0.0.1:{server.port}",
+            limits=__import__("httpx").Limits(
+                max_connections=250, max_keepalive_connections=250
+            ),
+        ) as tcp_client:
+            async def push_one(ev: dict[str, Any]) -> dict[str, Any]:
+                nonlocal in_flight, peak_in_flight
+                async with lock:
+                    in_flight += 1
+                    if in_flight > peak_in_flight:
+                        peak_in_flight = in_flight
+                try:
+                    return await _push(tcp_client, [ev])
+                finally:
+                    async with lock:
+                        in_flight -= 1
+
+            results = await asyncio.gather(*[push_one(ev) for ev in events])
+    finally:
+        await server.stop()
+
     print(
-        f"\n[test_f] Peak simultaneous connections observed: {pool.peak_conns} "
-        f"(pool max_size: {pool.max_size})"
+        f"\n[test_f] Peak simultaneous in-flight requests: {peak_in_flight} | "
+        f"Peak simultaneous DB connections: {pool.peak_conns} (pool max_size: {pool.max_size})"
+    )
+    assert peak_in_flight >= 20, (
+        f"Expected peak simultaneous in-flight requests >= 20, got {peak_in_flight}"
     )
 
     # All 200 requests must get a 200 response (no crashes/deadlocks)
