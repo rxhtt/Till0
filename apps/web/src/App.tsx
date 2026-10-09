@@ -7,7 +7,7 @@ import React from 'react';
 export function App(): React.JSX.Element {
   return (
     <main className="min-h-screen bg-bg-0 text-text flex items-center justify-center">
-      <h1 className="text-[28px] font-semibold tracking-tight text-text">Till0</h1>
+      <h1 className="text-[28px] font-semibold text-text">Till0</h1>
     </main>
   );
 }
