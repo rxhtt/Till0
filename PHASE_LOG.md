@@ -46,3 +46,39 @@ Date: 2026-10-09
 5. **CI config is valid:**
    - Verified YAML syntax of `.github/workflows/ci.yml`.
    - All CI steps (`pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm build`, `ruff check`, `mypy --strict`, `pytest`) ran locally and exited with code 0.
+
+## Drift Check — 2026-10-09
+
+Compared every file, dependency, color, font size, and animation against SPEC.md and DESIGN.md.
+
+### Removed (not in SPEC.md or DESIGN.md)
+
+| Item | File | Reason |
+|---|---|---|
+| `apps/web/src/App.js` | source tree | Compiled JS artifact of App.tsx — no JS source files specified |
+| `apps/web/src/main.js` | source tree | Compiled JS artifact of main.tsx |
+| `apps/web/vite.config.js` | source tree | Compiled JS artifact of vite.config.ts |
+| `apps/web/tsconfig.tsbuildinfo` | source tree | tsc incremental build info, not source |
+| `tracking-tight` class | `apps/web/src/App.tsx` line 10 | Letter-spacing not in DESIGN.md tokens (AGENTS rule 2) |
+| `antialiased` class | `apps/web/index.html` body | Not in DESIGN.md (AGENTS rule 2) |
+
+Added `*.tsbuildinfo` to `.gitignore` to prevent artifact recurrence.
+
+### No drift found in
+
+- Colors: all 10 tokens in `index.css` match DESIGN.md exactly
+- Font sizes: `text-[28px]` is in the allowed set {12,14,16,20,**28**,48}
+- Font weights: `font-semibold` = 600, in allowed set {400,600}
+- Radii: 4px and 12px only tokens defined
+- Shadow: `paper-shadow 0 24px 40px -20px #000` matches DESIGN.md exactly
+- Fonts: Geist Variable (UI) and Geist Mono Variable (mono), self-hosted via fontsource
+- Routes: none yet (Phase 0 is scaffold only — single placeholder page)
+- Dependencies: all in STACK.md; no unlisted packages
+- Animations: none yet (Phase 0 is scaffold only)
+
+### Quality gates after removals
+
+- `pnpm typecheck`: 0 errors ✔
+- `pnpm lint` (eslint + depcruise): 0 violations, 32 modules cruised ✔
+- `pnpm test`: 6/6 tests passed ✔
+
