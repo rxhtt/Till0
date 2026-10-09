@@ -27,6 +27,8 @@ services:
       - "8000:8000"
     environment:
       DATABASE_URL: postgresql://till0:till0_secret@postgres:5432/till0
+      ADMIN_SECRET: till0_admin
+      LOW_STOCK_THRESHOLD: "5"
     depends_on:
       postgres:
         condition: service_healthy

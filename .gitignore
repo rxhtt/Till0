@@ -16,3 +16,6 @@ venv/
 # Environment and logs
 *.log
 .DS_Store
+GITHUB.TOKEN
+*.token
+*.env

@@ -14,9 +14,6 @@ export interface paths {
         /**
          * Get Health
          * @description Check API server health status.
-         *
-         *     Returns:
-         *         HealthResponse model indicating server status.
          */
         get: operations["get_health_health_get"];
         put?: never;
@@ -27,10 +24,220 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/catalog": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Catalog
+         * @description Return all products with current stock balances.
+         */
+        get: operations["get_catalog_catalog_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/sync/push": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Sync Push
+         * @description Accept a batch of up to 50 events from a terminal.
+         *
+         *     Per-event SAVEPOINT ensures one bad event cannot block the rest.
+         *     Stock rows are updated in sorted-SKU order to prevent deadlocks.
+         */
+        post: operations["sync_push_sync_push_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/sync/pull": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Sync Pull
+         * @description Return events from other terminals since `since`, plus a stock snapshot.
+         */
+        get: operations["sync_pull_sync_pull_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/audit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Audit
+         * @description Recompute balances from events and verify conservation.
+         *
+         *     Checks:
+         *     - opening_stock - sold + received == stored balance for every SKU
+         *     - No duplicate event_id (should never happen given UNIQUE constraint)
+         *     - No gaps in server_seq sequence
+         */
+        get: operations["get_audit_audit_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/ledger": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Ledger
+         * @description Compact state snapshot for the Stage panel.
+         */
+        get: operations["get_ledger_ledger_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/reset": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Admin Reset
+         * @description Truncate all data tables (demo only). Requires X-Admin header.
+         */
+        post: operations["admin_reset_admin_reset_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * AlertOut
+         * @description One undelivered alert.
+         */
+        AlertOut: {
+            /** Id */
+            id: number;
+            /** Sku */
+            sku: string;
+            /** Qty */
+            qty: number;
+            /** Created At */
+            created_at: string;
+        };
+        /**
+         * AuditResponse
+         * @description Response for GET /audit.
+         */
+        AuditResponse: {
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "PASS" | "FAIL";
+            /** Duplicate Event Ids */
+            duplicate_event_ids: string[];
+            /** Seq Gaps */
+            seq_gaps: number[];
+            /** Skus */
+            skus: components["schemas"]["AuditSkuRow"][];
+        };
+        /**
+         * AuditSkuRow
+         * @description Audit result for one SKU.
+         */
+        AuditSkuRow: {
+            /** Sku */
+            sku: string;
+            /** Opening */
+            opening: number;
+            /** Sold */
+            sold: number;
+            /** Received */
+            received: number;
+            /** Computed Balance */
+            computed_balance: number;
+            /** Stored Balance */
+            stored_balance: number;
+            /** Ok */
+            ok: boolean;
+        };
+        /**
+         * DeadLetterOut
+         * @description One dead-letter event.
+         */
+        DeadLetterOut: {
+            /** Event Id */
+            event_id: string;
+            /** Reason */
+            reason: string;
+        };
+        /**
+         * ExceptionOut
+         * @description One stock exception (balance went below zero).
+         */
+        ExceptionOut: {
+            /** Id */
+            id: number;
+            /** Sku */
+            sku: string;
+            /** Event Id */
+            event_id: string;
+            /** Qty After */
+            qty_after: number;
+            /** Created At */
+            created_at: string;
+        };
+        /** HTTPValidationError */
+        HTTPValidationError: {
+            /** Detail */
+            detail?: components["schemas"]["ValidationError"][];
+        };
         /**
          * HealthResponse
          * @description Response model for system health check.
@@ -48,6 +255,165 @@ export interface components {
              * @default 0.1.0
              */
             version: string;
+        };
+        /**
+         * LedgerResponse
+         * @description Response for GET /ledger (Stage panel compact state).
+         */
+        LedgerResponse: {
+            /** Event Count */
+            event_count: number;
+            /** Duplicates Rejected */
+            duplicates_rejected: number;
+            /** Balances */
+            balances: components["schemas"]["StockSnapshot"][];
+            /** Exceptions */
+            exceptions: components["schemas"]["ExceptionOut"][];
+            /** Dead Letters */
+            dead_letters: components["schemas"]["DeadLetterOut"][];
+            /** Alerts */
+            alerts: components["schemas"]["AlertOut"][];
+        };
+        /**
+         * ProductOut
+         * @description Single product row returned from /catalog.
+         */
+        ProductOut: {
+            /** Sku */
+            sku: string;
+            /** Name */
+            name: string;
+            /** Price Paise */
+            price_paise: number;
+            /** Tax Bp */
+            tax_bp: number;
+            /** Barcode */
+            barcode: string;
+            /** Opening Stock */
+            opening_stock: number;
+            /**
+             * Qty
+             * @description Current stock balance
+             */
+            qty: number;
+        };
+        /**
+         * PullResponse
+         * @description Response for GET /sync/pull.
+         */
+        PullResponse: {
+            /** Events */
+            events: components["schemas"]["StoredEvent"][];
+            /** Balances */
+            balances: components["schemas"]["StockSnapshot"][];
+            /** As Of Server Seq */
+            as_of_server_seq: number;
+            /** Own Applied Ids */
+            own_applied_ids: string[];
+        };
+        /**
+         * PushBatch
+         * @description Batch of up to 50 events sent to /sync/push.
+         */
+        PushBatch: {
+            /** Events */
+            events: components["schemas"]["PushEvent"][];
+        };
+        /**
+         * PushEvent
+         * @description One event submitted in a /sync/push batch.
+         */
+        PushEvent: {
+            /** Event Id */
+            event_id: string;
+            /** Terminal Id */
+            terminal_id: string;
+            /** Terminal Seq */
+            terminal_seq: number;
+            /**
+             * Type
+             * @enum {string}
+             */
+            type: "SALE_COMPLETED" | "STOCK_RECEIVED";
+            /** Payload */
+            payload: {
+                [key: string]: unknown;
+            };
+            /**
+             * Client Ts
+             * @description ISO-8601 timestamp from the terminal
+             */
+            client_ts: string;
+        };
+        /**
+         * PushEventResult
+         * @description Per-event result returned from /sync/push.
+         */
+        PushEventResult: {
+            /** Event Id */
+            event_id: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "applied" | "duplicate" | "rejected";
+            /** Server Seq */
+            server_seq?: number | null;
+        };
+        /**
+         * PushResponse
+         * @description Full response from /sync/push.
+         */
+        PushResponse: {
+            /** Results */
+            results: components["schemas"]["PushEventResult"][];
+        };
+        /**
+         * StockSnapshot
+         * @description Current stock balance for one SKU.
+         */
+        StockSnapshot: {
+            /** Sku */
+            sku: string;
+            /** Qty */
+            qty: number;
+        };
+        /**
+         * StoredEvent
+         * @description One event as stored in the events table (returned in pull).
+         */
+        StoredEvent: {
+            /** Server Seq */
+            server_seq: number;
+            /** Event Id */
+            event_id: string;
+            /** Terminal Id */
+            terminal_id: string;
+            /** Terminal Seq */
+            terminal_seq: number;
+            /** Type */
+            type: string;
+            /** Payload */
+            payload: {
+                [key: string]: unknown;
+            };
+            /** Client Ts */
+            client_ts: string;
+            /** Received At */
+            received_at: string;
+        };
+        /** ValidationError */
+        ValidationError: {
+            /** Location */
+            loc: (string | number)[];
+            /** Message */
+            msg: string;
+            /** Error Type */
+            type: string;
+            /** Input */
+            input?: unknown;
+            /** Context */
+            ctx?: Record<string, never>;
         };
     };
     responses: never;
@@ -74,6 +440,162 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HealthResponse"];
+                };
+            };
+        };
+    };
+    get_catalog_catalog_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProductOut"][];
+                };
+            };
+        };
+    };
+    sync_push_sync_push_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PushBatch"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PushResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    sync_pull_sync_pull_get: {
+        parameters: {
+            query?: {
+                /** @description Return events with server_seq > since */
+                since?: number;
+                /** @description Calling terminal ID */
+                terminal_id?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PullResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_audit_audit_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuditResponse"];
+                };
+            };
+        };
+    };
+    get_ledger_ledger_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LedgerResponse"];
+                };
+            };
+        };
+    };
+    admin_reset_admin_reset_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Admin": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
