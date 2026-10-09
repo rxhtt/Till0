@@ -195,3 +195,21 @@ export interface PrintJob {
   /** ISO-8601 timestamp when job was created. */
   readonly createdAt: string;
 }
+
+// ─── API Schema Type Aliases ──────────────────────────────────────────
+
+import type { components } from './api-types.js';
+
+
+export type ProductOut = components['schemas']['ProductOut'];
+export type PushBatch = components['schemas']['PushBatch'];
+export type PushEvent = components['schemas']['PushEvent'];
+export type PushEventResult = components['schemas']['PushEventResult'];
+export type PushResponse = components['schemas']['PushResponse'];
+export type PullResponse = components['schemas']['PullResponse'];
+export type StoredEvent = components['schemas']['StoredEvent'];
+export type StockSnapshot = components['schemas']['StockSnapshot'];
+export type AuditResponse = components['schemas']['AuditResponse'];
+export type AuditSkuRow = components['schemas']['AuditSkuRow'];
+export type HealthResponse = components['schemas']['HealthResponse'];
+export type LedgerResponse = components['schemas']['LedgerResponse'];

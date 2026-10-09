@@ -9,8 +9,10 @@
     "lint": "eslint . && pnpm depcruise",
     "depcruise": "depcruise --config .dependency-cruiser.cjs packages apps",
     "test": "pnpm -r run test",
+    "sim": "node packages/core/dist/sim/cli.js",
     "generate:api": "./scripts/generate-api-types.sh"
   },
+
   "devDependencies": {
     "@typescript-eslint/eslint-plugin": "8.71.1",
     "@typescript-eslint/parser": "8.71.1",

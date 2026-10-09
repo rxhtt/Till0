@@ -12,6 +12,10 @@ export * from './money.js';
 export * from './clock.js';
 export * from './cart.js';
 export * from './receipt.js';
+export * from './network-gate.js';
+export * from './sync-storage.js';
+export * from './sync-engine.js';
+export * from './sim/index.js';
 
 /**
  * Generate a monotonic unique event identifier using ULID.
@@ -24,3 +28,4 @@ export function generateEventId(clock: Clock): string {
 }
 
 export type * from './api-types.js';
+

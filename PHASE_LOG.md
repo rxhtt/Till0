@@ -336,3 +336,110 @@ Rigorous audit comparing repository source files, dependencies, database structu
 - `pytest server/tests`: 13/13 passed (including concurrent push/pull cursor race stress tests) ✔
 - **Drift verdict:** 0 drift detected. Complete alignment across all project specifications.
 
+## Phase 3: SyncEngine and Deterministic Chaos Simulator
+
+Status: Completed
+Date: 2026-10-09
+
+### Acceptance Criteria Verification
+
+1. **NetworkGate Fault Injection:**
+   - Single point of entry for all network traffic in `packages/core/src/network-gate.ts`.
+   - Supports:
+     - `offline`: throws immediate network error / TypeError
+     - `addedLatencyMs`: configurable delay per request
+     - `dropAckPercentage`: response dropped after server execution
+     - `duplicateRequestMode`: duplicate request sent concurrently
+   - Verified via unit test suite in `packages/core/test/sync-engine.test.ts`.
+
+2. **SyncEngine Core & Concurrency:**
+   - Health checking via `GET /health` heartbeat, not `navigator.onLine` (ADR 0011).
+   - Batch size: up to 50 events pushed per request.
+   - Exponential backoff: 0.5s to 30s with ±20% jitter.
+   - Triggers: after each sale, on reconnect transition, and periodic interval (5s).
+   - Single worker per terminal DB via `NavigatorLocksCoordinator` (`till0_sync_worker_<terminal>`).
+   - Cross-tab notifications via `BroadcastSyncNotifier` (`BroadcastChannel: till0_sync_<terminal>`).
+   - Storage isolation via `ISyncStorage` with `DexieSyncStorage` in web app and `MemorySyncStorage` in pure tests/simulator.
+
+3. **Deterministic Simulator (`packages/core/src/sim`):**
+   - Pure, deterministic, zero-external-service simulator:
+     - `VirtualClock`: deterministic stepped clock
+     - `SeededRng`: 32-bit linear congruential generator (LCG)
+     - `InMemoryFakeServer`: complete in-memory ledger matching Till0 P1 backend contract (/health, /catalog, /sync/push with per-event savepoints and gapless sequence, /sync/pull with as_of cursor, /audit)
+     - `NetworkModel`: partitions, drops, duplicate requests, dropped ACKs
+     - Crash-and-restart simulation from persisted storage snapshots
+   - Invariants verified:
+     - Every event applied exactly once (no duplicate event_id, no sequence gaps)
+     - Server balances == opening_stock - total sold
+     - Convergence after quiescence: terminal projected stock == server balance
+     - No lost sales: every generated sale exists in server ledger
+
+4. **1000 Seeds Benchmark (`pnpm sim --seeds 1000`):**
+   - Command: `pnpm sim --seeds 1000`
+   - Output:
+     ```
+     Running simulation with 1000 seeds...
+       [200/1000] seeds verified...
+       [400/1000] seeds verified...
+       [600/1000] seeds verified...
+       [800/1000] seeds verified...
+       [1000/1000] seeds verified...
+
+     ALL 1000 SEEDS PASSED in 4.65s (< 60s limit).
+     ```
+   - Execution time: 4.65 seconds (well within the 60-second requirement).
+
+5. **Proving Simulator Teeth (Idempotency Mutation Test):**
+   - Test procedure: In a scratch branch `scratch-test-teeth`, temporarily disabled the idempotency duplicate check in `InMemoryFakeServer.syncPush`.
+   - Command: `pnpm sim --seeds 1000`
+   - Result:
+     ```
+     FAILURE on seed 1 after 0.09s!
+     Error: Server events count mismatch: expected 28, got 38
+     To reproduce: pnpm sim --seed 1
+     ```
+   - Exact seed reproduction: `pnpm sim --seed 1` reproduced the exact failure deterministically in 0.09s (`expected 28, got 38`).
+   - Restored spec-compliant code: Re-running `pnpm sim --seed 1` and `pnpm sim --seeds 1000` both pass 100% green.
+
+6. **Edge Case Tests (`packages/core/test/sync-engine.test.ts`):**
+   - 25-event burst of local sales during active, in-flight sync loses nothing and converges to exact balance.
+   - Two concurrent tabs on one terminal produce exactly one active sync worker via lock coordinator.
+   - Property tests with `fast-check` pass across arbitrary seed spaces.
+
+### Quality Gates Status
+- `pnpm lint` (eslint + depcruise): 0 violations (86 modules, 146 dependencies cruised) ✔
+- `pnpm typecheck`: 0 errors across 3 workspaces ✔
+- `pnpm test`: 33 passed across 4 test suites (`core.test.ts` 4, `sync-engine.test.ts` 7, `hardware.test.ts` 1, `data.test.ts` 20, `app.test.tsx` 1) ✔
+- `pnpm build`: Clean production bundle and PWA service worker generated ✔
+- `ruff check`: 0 lint errors in server & scripts ✔
+- `mypy --strict`: 0 errors across 9 source files ✔
+- `pytest server/tests`: 13/13 passed in 9.36s ✔
+
+## Drift Check — Post Phase 3 (2026-10-09)
+
+Rigorous audit comparing repository source files, dependencies, database structures, and design tokens against `SPEC.md`, `DESIGN.md`, `STACK.md`, and `AGENTS.md`.
+
+### 1. Scope & UI Law Audit (SPEC.md / AGENTS.md Rule 1)
+- **Web UI:** `apps/web/src/App.tsx` remains strictly a scaffold rendering `<main>` containing `Till0`. No unauthorized UI buttons, routes, tabs, modals, or settings were introduced.
+- **Packages Architecture:**
+  - `packages/core` contains only domain types, money arithmetic, cart model, receipt builders, clock/rng interfaces, NetworkGate, SyncEngine, and deterministic simulation modules.
+  - Zero DOM or React imports anywhere in `packages/core` (verified by dependency-cruiser rule `core-no-react-or-dom`).
+  - `apps/web/src/data` contains only IndexedDB logic, queue serialization, appendSale, projections, DexieSyncStorage, and browser lock/broadcast coordinators.
+
+### 2. Design Tokens & Styling (DESIGN.md / AGENTS.md Rule 5)
+- **Tokens in `index.css`:** Exactly the 10 specified color tokens, 2 radii (`rounded-[4px]`, `rounded-[12px]`), and paper shadow.
+- **Typography:** Self-hosted `@fontsource-variable/geist` and `@fontsource-variable/geist-mono` only.
+- **Icons & Libraries:** Only `lucide-react` referenced.
+
+### 3. Stack Lock (STACK.md / AGENTS.md Rule 3)
+- All packages in root `package.json`, `apps/web/package.json`, `packages/core/package.json`, `packages/hardware/package.json`, and `server/pyproject.toml` maintain exact pinned versions. Zero unlisted dependencies installed.
+
+### 4. Determinism & Integrity (AGENTS.md Rules 9 & 10)
+- Money: Exclusively integer paise (`pricePaise`, `taxBp`, `unitPricePaise`, `lineTotalPaise`, `subtotalPaise`, `taxPaise`, `totalPaise`). Zero floating-point calculations.
+- Clocks & RNG: `VirtualClock` and `SeededRng` strictly injected across all simulation runs; zero un-injected `Date.now()` or `Math.random()` in core domain logic.
+- Gapless Sequences: Maintained across both server PostgreSQL ledger and client simulator.
+
+### 5. Drift Verdict
+- **Drift verdict:** 0 drift detected. Complete alignment across all project specifications.
+
+
