@@ -298,3 +298,41 @@ Date: 2026-10-09
 - `pnpm build`: Succeeded (production bundle + service worker emitted).
 - Server tests: 13/13 passed via pytest in `.venv`.
 - Server lint & typecheck: ruff and mypy --strict passed with 0 errors.
+
+## Drift Check — Post Phase 2 (2026-10-09)
+
+Rigorous audit comparing repository source files, dependencies, database structures, and design tokens against `SPEC.md`, `DESIGN.md`, `STACK.md`, and `AGENTS.md`.
+
+### 1. Scope & UI Verification (SPEC.md / AGENTS.md Scope Law)
+- **Web UI:** `apps/web/src/App.tsx` remains strictly a scaffold rendering `<main>` containing `Till0`. No unauthorized UI buttons, routes, tabs, modals, or settings were introduced.
+- **Packages Architecture:**
+  - `packages/core` contains only domain types, money arithmetic, cart model, receipt builders, and clock/rng interfaces.
+  - Zero DOM or React imports anywhere in `packages/core` (enforced by `dependency-cruiser` rule `core-no-react-or-dom`).
+  - `apps/web/src/data` contains only IndexedDB logic, queue serialization, appendSale, and projections.
+
+### 2. Design Tokens & Styling (DESIGN.md)
+- **Tokens in `index.css`:** Exactly the 10 specified color tokens, 2 radii (`rounded-[4px]`, `rounded-[12px]`), and paper shadow.
+- **Typography:** Self-hosted `@fontsource-variable/geist` and `@fontsource-variable/geist-mono` only. No CDN font dependencies.
+- **Icons & Libraries:** Only `lucide-react` is referenced. No prohibited animation libraries or unlisted dependencies.
+
+### 3. Stack Lock (STACK.md)
+- `packages/core/package.json`, `packages/hardware/package.json`, and `apps/web/package.json` maintain exact pinned versions matching `STACK.md`.
+- `fake-indexeddb` pinned to `6.2.5` documented in `DECISIONS.md` and added to `STACK.md`.
+- Package exports configured to source index files (`src/index.ts`) ensuring reliable clean workspace typechecking and test execution without stale build artifacts.
+
+### 4. Determinism & Integrity (AGENTS.md Rules 9 & 10)
+- Money: Exclusively integer paise (`pricePaise`, `taxBp`, `unitPricePaise`, `lineTotalPaise`, `subtotalPaise`, `taxPaise`, `totalPaise`). Zero floating-point calculations.
+- Clocks: `Clock` interface injected for ULID generation, event timestamps, and receipts; zero un-injected `Date.now()` calls in core models.
+- Idempotency: `appendSale` derives sale `event_id` deterministically from checkout `attempt_id`.
+- Server sync: `/sync/pull` accurately computes `as_of_server_seq` to prevent cursor races during concurrent pushes.
+
+### 5. Quality Gates Summary
+- `pnpm lint` (eslint + depcruise): 0 violations (56 modules, 75 dependencies cruised) ✔
+- `pnpm typecheck`: 0 errors across 3 workspaces ✔
+- `pnpm test`: 26 passed across 3 test suites (`core.test.ts`, `hardware.test.ts`, `data.test.ts`, `app.test.tsx`) ✔
+- `pnpm build`: Clean production bundle and PWA service worker generated ✔
+- `ruff check`: 0 lint errors in server & scripts ✔
+- `mypy --strict`: 0 errors across server code ✔
+- `pytest server/tests`: 13/13 passed (including concurrent push/pull cursor race stress tests) ✔
+- **Drift verdict:** 0 drift detected. Complete alignment across all project specifications.
+

@@ -446,11 +446,12 @@ async def sync_pull(
             )
         ).fetchall()
 
-        # as_of = max server_seq in DB
-        seq_row = await (
-            await conn.execute("SELECT COALESCE(MAX(server_seq), 0) AS mx FROM events")
-        ).fetchone()
-        as_of: int = seq_row["mx"] if seq_row else 0
+        # as_of = highest server_seq among all events returned/acknowledged, or since if none
+        max_returned_seq = max(
+            [r["server_seq"] for r in ev_rows] + [since],
+            default=since,
+        )
+        as_of = max_returned_seq
 
     events: list[StoredEvent] = [
         StoredEvent(
